@@ -1138,7 +1138,7 @@
         "source": "public documentation review",
         "statement": "generic/public documentation; no private operational evidence"
       },
-      "sha256": "27fa5563e80011565765c7a09b509024ace12e95ad41b75d12665f3990d03c91"
+      "sha256": "a04b7e970def3481c12e0ab30571b3c4774a8e634e035329831677a3354043b2"
     },
     {
       "path": "docs/HARDWARE_RUNNER_AUTONOMY.md",
@@ -7522,7 +7522,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "509e17be7958c1e3075440028e8a5a92de59cc5598fa527e28c901ab336a1ec4"
+      "sha256": "e7b2ee7903f02c86d2cd9f41cb00209f9187c8edf10aac120938f4751f0bd2aa"
     },
     {
       "path": "tools/psp_oracle/user_mode_imports.py",
@@ -8651,7 +8651,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "6d5aa62eae02234b54c45b5e4db665e242bbf2a835f3bb7372d410b23fd388a4"
+      "sha256": "bc76778c4157f32a97e3552c4774491db5b566409f1a13361453f26d33825e32"
     },
     {
       "path": "tools/test_history_audit.py",
@@ -9480,7 +9480,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "569dad0dce85ce578ce3f221c0667d8216ddeb4f0cd86ecfd5e71dd2d9465739"
+      "sha256": "4a4a8f471d3565ba65f7cb9ca0ccc25f65ccf8ddf7882fcf56f8da73e2c7184f"
     },
     {
       "path": "tools/test_psp_parsers.py",
