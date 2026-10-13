@@ -85,6 +85,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 import publication_policy  # noqa: E402
+import scratch_dir  # noqa: E402
 from test_build_truth import _class_scratch_build_root  # noqa: E402
 from test_player_package_route import (  # noqa: E402
     DISC_ID,
@@ -463,7 +464,7 @@ class TestPlayerPackageDeterminism(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.temporary = tempfile.TemporaryDirectory(prefix="nk-player-determinism-")
+        cls.temporary = scratch_dir.TemporaryDirectory(prefix="nk-player-determinism-")
         cls.addClassCleanup(cls.temporary.cleanup)
         cls.workspace = Path(cls.temporary.name)
         cls.before = cls.repo_status()
