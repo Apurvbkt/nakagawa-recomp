@@ -6518,7 +6518,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "b42d2886ff68d2f3b91b39b4b7e37f96113a130abf33b25600fbdc7534f85caa"
+      "sha256": "c233cf57c7527aa60ea894345875a4b1067153a211562e73bb1ad7ddf74d8335"
     },
     {
       "path": "tools/flight_diff.py",
@@ -8459,7 +8459,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "02ae49e9df461ce915e66b21187ef48bb5877efa96b19ec4671aaa08605c1539"
+      "sha256": "f6f8089e824999d4188e539c42b72ede010e277835529071da665ba1a31d4914"
     },
     {
       "path": "tools/test_flash0_font.py",
