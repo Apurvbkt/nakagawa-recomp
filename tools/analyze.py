@@ -721,11 +721,21 @@ def trace_function(elf, start, ranges, covered, calls, hc, walked=None):
 
 def _is_hard_terminator(word):
     # True for instructions after which control never falls through to the next
-    # slot-pair: `j`, any `jr`, or the unconditional `b` idiom (beq $0,$0).
-    # `jal`/`jalr`/`bal` return, so they are NOT terminators here.
+    # slot-pair: `j`, any `jr`, unlinked `jalr $zero, $rs`, or the unconditional `b` idiom (beq $0,$0).
+    # `jal`/linked `jalr`/`bal` return, so they are NOT terminators here.
     op = word >> 26
-    return (op == 2 or (op == 0 and (word & 0x3F) == 0x08)
-            or (op == 4 and ((word >> 21) & 0x1F) == 0 and ((word >> 16) & 0x1F) == 0))
+    if op == 2:
+        return True
+    if op == 0:
+        fn = word & 0x3F
+        if fn == 0x08:  # jr rs
+            return True
+        if fn == 0x09 and ((word >> 11) & 0x1F) == 0:  # jalr $zero, rs
+            return True
+        return False
+    if op == 4 and ((word >> 21) & 0x1F) == 0 and ((word >> 16) & 0x1F) == 0:
+        return True
+    return False
 
 
 #: Public alias. The entry-role audit needs exactly this fall-through rule to
