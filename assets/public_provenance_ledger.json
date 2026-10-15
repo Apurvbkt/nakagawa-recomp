@@ -9769,7 +9769,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "fbc5ac9aebd839f20f89d0ba68f60164bdf1dcc75f1d088cde8129a7e70de362"
+      "sha256": "62011ca1dcdcbeab6fc158ea8d0cf8df9abb42124e6d9b61a86206fdd5248819"
     },
     {
       "path": "tools/test_sbom_fail_closed.py",
