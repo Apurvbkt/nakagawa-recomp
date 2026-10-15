@@ -2587,7 +2587,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "2ed2afcc0b5e9925b9063b4ce9e72b758f52a9cc2bd3e255a64475ce5d66573f"
+      "sha256": "a4194edbb90810adf7ea8ac66716697a4fc583d48d957101ff76ac5f037450bd"
     },
     {
       "path": "src/core/nk_font.c",
@@ -9492,7 +9492,7 @@
         "authorship": "independent implementation record",
         "upstream_attribution": null
       },
-      "sha256": "559d4a57421cb6d635d229eaa00dcfb44c2364237adc46f10e5568783632a727"
+      "sha256": "db183fafff5519a5659a768e5eddccef072c2d5c6352b28b6677dbbb131c5d0c"
     },
     {
       "path": "tools/test_psp_issue_matrix.py",
