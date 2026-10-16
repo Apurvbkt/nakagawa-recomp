@@ -984,7 +984,7 @@ PUBLIC_TARGETS := \
 	gpu-capture-selftest \
 	gpu-selftest-status
 
-INTERNAL_TARGETS := FORCE player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
+INTERNAL_TARGETS := FORCE project-japanese-font player-vulkan-check player-state-test-bin input-settings-test-bin package-builder-test-bin sdl3-check vfpu_fuzz_validate_synthetic provenance-record-gap-check native-core-objects-core native-core-objects-player
 .PHONY: $(PUBLIC_TARGETS) $(INTERNAL_TARGETS)
 
 HELP_DESCRIPTION_help := list every public Make target and its purpose
@@ -1972,6 +1972,25 @@ endif
 endif
 -include $(DEP_FILES)
 
+PROJECT_JAPANESE_GENERATED_DIR := $(BUILD_DIR)/project-font
+PROJECT_JAPANESE_RUNTIME_DIR := $(BUILD_DIR)/font
+PROJECT_JAPANESE_PGF := $(PROJECT_JAPANESE_GENERATED_DIR)/nkjpn.pgf
+PROJECT_JAPANESE_MANIFEST := $(PROJECT_JAPANESE_GENERATED_DIR)/nkjpn.json
+PROJECT_JAPANESE_TTF := fixtures/fonts/mplus1p/MPLUS1p-Regular.ttf
+PROJECT_JAPANESE_PIN := fixtures/fonts/mplus1p/PIN.json
+PROJECT_JAPANESE_LICENSE := fixtures/fonts/mplus1p/OFL.txt
+
+project-japanese-font: $(PROJECT_JAPANESE_PGF)
+	@$(PYTHON) -c "from pathlib import Path; import shutil; src=Path('$(PROJECT_JAPANESE_GENERATED_DIR)'); dst=Path('$(PROJECT_JAPANESE_RUNTIME_DIR)'); dst.mkdir(parents=True, exist_ok=True); [shutil.copyfile(src/name, dst/name) for name in ('nkjpn.pgf', 'nkjpn.json', 'OFL.txt')]"
+
+$(PROJECT_JAPANESE_PGF): $(PROJECT_JAPANESE_TTF) $(PROJECT_JAPANESE_PIN) $(PROJECT_JAPANESE_LICENSE) tools/ttf2pgf.py tools/pgf_writer.py docs/cleanroom/PGF_CONVERTER_SPEC.md
+	@$(PYTHON) -c "from pathlib import Path; Path('$(PROJECT_JAPANESE_GENERATED_DIR)').mkdir(parents=True, exist_ok=True)"
+	$(PYTHON) tools/ttf2pgf.py "$@" "$(PROJECT_JAPANESE_TTF)" --pin "$(PROJECT_JAPANESE_PIN)" --jis-x-0208-japanese --ppem 12 --font-name "Nakagawa Open Japanese" --font-type "Regular" --manifest "$(PROJECT_JAPANESE_MANIFEST)"
+	$(PYTHON) -c "import shutil; shutil.copyfile('$(PROJECT_JAPANESE_LICENSE)', '$(PROJECT_JAPANESE_GENERATED_DIR)/OFL.txt')"
+
+# The project Japanese font is built before compile but is not a link input, so it is an
+# order-only prerequisite on its own rule line; the compile line below keeps its link set.
+compile: | project-japanese-font
 compile: shader-verify $(CHUNK_OBJS) $(RT_GE_O) $(RT_OBJS) $(ATRAC3P_OBJS) $(BUILD_DIR)/atrac3p_bridge.o $(BUILD_DIR)/$(GAME_NAME)_recomp.o | sdl3-check
 	$(file >$(LINK_OBJECTS_RSP),$(subst \,/,$(LINK_OBJECTS)))
 	$(CC) $(CFLAGS) $(LDFLAGS) $(LINK_MAP_ARG) $(REPRODUCIBLE_LINK_FLAG) -o $(BUILD_DIR)/$(GAME_NAME)$(EXE_EXT) \
