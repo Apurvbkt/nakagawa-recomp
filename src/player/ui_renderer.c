@@ -2780,16 +2780,29 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
             }
             focus++;
             bx += 150.0f;
-            if (bx + 310.0f > inner_r + 1.0f) {
+            if (bx + 200.0f > inner_r + 1.0f) {
                 bx = col1_x;
                 by += 42.0f;
             }
             focused = (app->focus_index == focus);
-            if (draw_button_focused(ren, bx, by, 310.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
+            if (draw_button_focused(ren, bx, by, 200.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
                 player_app_toggle_fullscreen(app);
             }
             focus++;
-            bx += 320.0f;
+            bx += 210.0f;
+            if (bx + 160.0f > inner_r + 1.0f) {
+                bx = col1_x;
+                by += 42.0f;
+            }
+            char scaling_label[32];
+            snprintf(scaling_label, sizeof(scaling_label), "Scaling: %s",
+                     player_present_scaling_label(app->settings.present_scaling));
+            focused = (app->focus_index == focus);
+            if (draw_button_focused(ren, bx, by, 160.0f, 36.0f, scaling_label, false, in, focused)) {
+                player_app_cycle_present_scaling(app, 1);
+            }
+            focus++;
+            bx += 170.0f;
             if (bx + 200.0f > inner_r + 1.0f) {
                 bx = col1_x;
                 by += 42.0f;
@@ -2868,6 +2881,20 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
                                  0.8f, inner_r - col1_x, COLOR_TEXT_DIM);
             y += 72.0f;
         }
+        /* Close in flow: always visible, never overlapping. Grow the card
+         * downward to hold it when the window allows. Only the extension
+         * is painted: repainting the whole card here would cover the
+         * sections drawn above. It is painted before the controller and
+         * manage buttons, which may sit in it, so it never covers them. */
+        float close_y = y + 100.0f;
+        float want_bottom = close_y + 46.0f + 16.0f;
+        if (want_bottom > card_y + card_h && want_bottom <= h - 8.0f) {
+            float old_bottom = card_y + card_h;
+            draw_filled_rect(ren, card_x, old_bottom - 2.0f, card_w, want_bottom - old_bottom + 2.0f, COLOR_CARD_BG);
+            draw_rect_outline(ren, card_x, old_bottom - 1.0f, card_w, want_bottom - old_bottom + 1.0f, COLOR_CARD_BORDER);
+            draw_filled_rect(ren, card_x + 1.0f, old_bottom - 1.0f, card_w - 2.0f, 1.0f, COLOR_CARD_BG);
+            card_h = want_bottom - card_y;
+        }
         bool ctrl_focused = (app->focus_index == focus);
         if (draw_button_focused(ren, card_x + 32.0f, y + 8.0f, 220.0f, 36.0f, "CONTROLLER SETTINGS", false, in, ctrl_focused)) {
             player_app_set_view(app, VIEW_CONTROLLER_SETTINGS);
@@ -2888,19 +2915,6 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         }
         focus++;
 
-        /* Close in flow: always visible, never overlapping. Grow the card
-         * downward to hold it when the window allows. Only the extension
-         * is painted: repainting the whole card here would cover the
-         * sections drawn above. */
-        float close_y = y + 100.0f;
-        float want_bottom = close_y + 46.0f + 16.0f;
-        if (want_bottom > card_y + card_h && want_bottom <= h - 8.0f) {
-            float old_bottom = card_y + card_h;
-            draw_filled_rect(ren, card_x, old_bottom - 2.0f, card_w, want_bottom - old_bottom + 2.0f, COLOR_CARD_BG);
-            draw_rect_outline(ren, card_x, old_bottom - 1.0f, card_w, want_bottom - old_bottom + 1.0f, COLOR_CARD_BORDER);
-            draw_filled_rect(ren, card_x + 1.0f, old_bottom - 1.0f, card_w - 2.0f, 1.0f, COLOR_CARD_BG);
-            card_h = want_bottom - card_y;
-        }
         bool close_focused = (app->focus_index == focus);
         if (draw_button_focused(ren, card_x + 32.0f, close_y, 200.0f, 46.0f, "SAVE & CLOSE", true, in, close_focused)) {
             player_app_save_settings(app, NULL);
@@ -2968,8 +2982,16 @@ static void render_settings(SDL_Renderer *ren, PlayerApp *app, const UiInput *in
         char fs_label[64];
         snprintf(fs_label, sizeof(fs_label), "Game fullscreen: %s", app->settings.fullscreen ? "ON" : "OFF");
         focused = (app->focus_index == focus);
-        if (draw_button_focused(ren, col1_x + 140.0f, tog_y + 24.0f, 310.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
+        if (draw_button_focused(ren, col1_x + 140.0f, tog_y + 24.0f, 200.0f, 36.0f, fs_label, app->settings.fullscreen, in, focused)) {
             player_app_toggle_fullscreen(app);
+        }
+        focus++;
+        char scaling_label[32];
+        snprintf(scaling_label, sizeof(scaling_label), "Scaling: %s",
+                 player_present_scaling_label(app->settings.present_scaling));
+        focused = (app->focus_index == focus);
+        if (draw_button_focused(ren, col1_x + 350.0f, tog_y + 24.0f, 180.0f, 36.0f, scaling_label, false, in, focused)) {
+            player_app_cycle_present_scaling(app, 1);
         }
         focus++;
         char rm_label[40];
