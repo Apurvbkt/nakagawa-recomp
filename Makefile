@@ -524,6 +524,7 @@ override CFLAGS += -DSR_PUBLIC_SAFE
 endif
 
 include mk/build_common.mk
+include mk/nk_ui.mk
 
 BUILD_PROFILE_TOOL := tools/build_profile.py
 CPU_STATE_ABI_HEADER := src/rt/recomp.h
@@ -945,6 +946,7 @@ PUBLIC_TARGETS := \
 	profiler-selftest \
 	gui-present-selftest \
 	clay-layout-selftest \
+	nk-ui-core-selftest \
 	coro-selftest \
 	hle-thread-selftest \
 	aot-return-boundary-thread-selftest \
@@ -1073,6 +1075,7 @@ HELP_DESCRIPTION_heap-selftest := run the heap and allocator selftest
 HELP_DESCRIPTION_profiler-selftest := run the profiler selftest
 HELP_DESCRIPTION_gui-present-selftest := run the host present pacing selftest
 HELP_DESCRIPTION_clay-layout-selftest := build and run the vendored Clay layout selftest
+HELP_DESCRIPTION_nk-ui-core-selftest := build and run the nk_ui core selftest (synthetic layout, focus and scale)
 HELP_DESCRIPTION_coro-selftest := run the coroutine selftest
 HELP_DESCRIPTION_hle-thread-selftest := build and run the HLE thread selftest
 HELP_DESCRIPTION_aot-return-boundary-thread-selftest := run the real recomp/scheduler thread-boundary regression
@@ -2935,7 +2938,16 @@ clay-layout-selftest:
 		-o $(BUILD_DIR)/clay_layout_selftest$(EXE_EXT) tests/native/test_clay_layout.c
 	$(BUILD_DIR)/clay_layout_selftest$(EXE_EXT)
 
-native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-core native-core-objects-player clay-layout-selftest
+.PHONY: nk-ui-core-selftest
+nk-ui-core-selftest:
+	@$(PYTHON) -c "from pathlib import Path; Path('$(BUILD_ROOT)').mkdir(parents=True, exist_ok=True)"
+	$(CC) -std=c99 -Wall -Wextra -Wpedantic -Werror -Isrc/ui -Ithird_party/clay \
+		-DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" \
+		$(NK_UI_NATIVE_CORE_SRCS) tests/native/test_nk_ui_core.c -lm \
+		-o $(BUILD_ROOT)/test_nk_ui_core$(EXE_EXT)
+	$(BUILD_ROOT_RUN)/test_nk_ui_core$(EXE_EXT)
+
+native-core-tests: cpu-lle-selftest domain-mode-selftest native-core-objects-core native-core-objects-player clay-layout-selftest nk-ui-core-selftest
 	$(CC) -std=c99 -Wall -Wextra -Isrc/rt -DSR_SELFTEST_BUILD_ROOT=\"$(BUILD_ROOT)\" src/rt/pgf_public.c \
 		tests/native/test_pgf_public.c -o $(BUILD_ROOT)/test_pgf_public$(EXE_EXT)
 	$(BUILD_ROOT_RUN)/test_pgf_public$(EXE_EXT)
