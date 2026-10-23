@@ -46,6 +46,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <time.h>
 
 /* Scratch root for the files this test writes: the checkout's build/ by default, or
  * the BUILD_ROOT the Makefile passes as -DSR_SELFTEST_BUILD_ROOT, so a scratch run never
@@ -191,6 +192,10 @@ static void write_binary_file(const char *path, const unsigned char *bytes, size
     assert(fwrite(bytes, 1, size, file) == size);
     assert(fclose(file) == 0);
 }
+
+/* The old key-file override, left set to an existing file for the whole run
+ * so the preflight checks can prove it is ignored. */
+static char g_decoy_key_path[NATIVE_TEST_PATH_MAX + 32];
 
 static void write_text_file(const char *path, const char *text) {
     FILE *file = fopen(path, "wb");
@@ -1728,9 +1733,286 @@ static void test_sample_entries_never_reach_library_json(void) {
     printf("[PLAYER_STATE_TEST] sample entries stay out of library.json PASS\n");
 }
 
+static int player_state_package_builder_child(int argc, char **argv) {
+    if (argc < 4 || strcmp(argv[2], "build-package") != 0) return 90;
+    const char *disc_id = argv[3];
+    const char *progress_path = NULL;
+    const char *user_root = NULL;
+    for (int i = 4; i + 1 < argc; i++) {
+        if (strcmp(argv[i], "--progress-json") == 0) progress_path = argv[++i];
+        else if (strcmp(argv[i], "--user-data-root") == 0) user_root = argv[++i];
+    }
+    if (!progress_path || !user_root) return 91;
+
+    const char *mode = getenv("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE");
+    if (mode && strcmp(mode, "success") == 0) {
+        const char *title_id = getenv("NAKAGAWA_TEST_PACKAGE_REBUILD_TITLE_ID");
+        if (!title_id || !title_id[0]) return 92;
+        char executable[128];
+        snprintf(executable, sizeof(executable), "%s.exe", title_id);
+        write_runtime_package_fixture(user_root, disc_id, title_id,
+                                      SR_CPUSTATE_ABI_VERSION, executable,
+                                      FIXTURE_SHA256, NULL);
+        write_text_file(progress_path,
+            "{\"stage\":\"package\",\"status\":\"PASS\","
+            "\"message\":\"Synthetic rebuild completed.\"}\n");
+        return 0;
+    }
+    if (mode && strcmp(mode, "failure") == 0) {
+        write_text_file(progress_path,
+            "{\"stage\":\"compile\",\"status\":\"FAIL\","
+            "\"message\":\"Synthetic rebuild failed before package promotion.\"}\n");
+        return 17;
+    }
+    return 93;
+}
+
+static void append_test_text_file(const char *path, const char *text) {
+    FILE *file = fopen(path, "ab");
+    assert(file != NULL);
+    size_t length = strlen(text);
+    assert(fwrite(text, 1, length, file) == length);
+    assert(fclose(file) == 0);
+}
+
+static void poll_player_package_build_to_terminal(PlayerApp *app) {
+    assert(app != NULL);
+    for (unsigned i = 0; i < 1000 && app->build_session.is_building; i++) {
+        player_app_poll_package_build(app, UINT64_C(2000) + i);
+        if (app->build_session.is_building &&
+            app->build_session.process.is_active &&
+            nk_platform_is_process_running(&app->build_session.process)) {
+#if defined(_WIN32) || defined(_WIN64)
+            Sleep(10);
+#else
+            const struct timespec delay = { 0, 10000000L };
+            (void)nanosleep(&delay, NULL);
+#endif
+        }
+    }
+    if (app->build_session.is_building) {
+        fprintf(stderr,
+                "package test child still active: process_active=%d running=%d "
+                "complete=%d failed=%d exit=%d stage=%s message=%s offset=%lld\n",
+                app->build_session.process.is_active ? 1 : 0,
+                app->build_session.process.is_active
+                    ? nk_platform_is_process_running(&app->build_session.process) : 0,
+                app->build_session.is_complete ? 1 : 0,
+                app->build_session.is_failed ? 1 : 0,
+                app->build_session.exit_code,
+                app->build_session.current_stage_name,
+                app->build_session.current_message,
+                (long long)app->build_session.progress_file_offset);
+    }
+    assert(!app->build_session.is_building);
+}
+
+static void test_package_build_lifecycle(const char *self_executable) {
+    assert(self_executable && self_executable[0]);
+    char sep = nk_platform_path_separator();
+
+    /* The same player-state poll path runs while a different view is active. */
+    PlayerApp *poll_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(poll_app != NULL);
+    char progress_path[NK_MAX_PATH * 2];
+    snprintf(progress_path, sizeof(progress_path), "%s%cbuild-view-progress.jsonl",
+             native_test_get_root(), sep);
+    package_builder_init_session(&poll_app->build_session, "ULUS99998",
+                                 "Build view polling fixture");
+    poll_app->build_session.is_building = true;
+    assert(strlen(progress_path) <
+           sizeof(poll_app->build_session.progress_file_path));
+    memcpy(poll_app->build_session.progress_file_path, progress_path,
+           strlen(progress_path) + 1);
+    write_text_file(progress_path,
+        "{\"stage\":\"extract\",\"status\":\"RUNNING\","
+        "\"message\":\"Extracting first module.\"}\n");
+    player_app_set_view(poll_app, VIEW_BUILDING_PACKAGE);
+    player_app_poll_package_build(poll_app, 1000);
+    assert(poll_app->build_session.current_stage == PACKAGE_BUILD_STAGE_EXTRACT);
+    assert(strcmp(poll_app->build_session.current_message,
+                  "Extracting first module.") == 0);
+
+    player_app_set_view(poll_app, VIEW_LIBRARY);
+    append_test_text_file(progress_path,
+        "{\"stage\":\"compile\",\"status\":\"RUNNING\","
+        "\"message\":\"Compiling while away.\"}\n");
+    player_app_poll_package_build(poll_app, 1025);
+    assert(poll_app->build_session.current_stage == PACKAGE_BUILD_STAGE_COMPILE);
+    assert(strcmp(poll_app->build_session.current_message,
+                  "Compiling while away.") == 0);
+    assert(poll_app->build_session.elapsed_ms == 25);
+
+    player_app_set_view(poll_app, VIEW_BUILDING_PACKAGE);
+    append_test_text_file(progress_path,
+        "{\"stage\":\"compile\",\"status\":\"RUNNING\","
+        "\"message\":\"Progress after returning.\"}\n");
+    player_app_poll_package_build(poll_app, 1075);
+    assert(strcmp(poll_app->build_session.current_message,
+                  "Progress after returning.") == 0);
+    assert(poll_app->build_session.elapsed_ms == 75);
+    poll_app->build_session.is_building = false;
+    remove(progress_path);
+    free(poll_app);
+    printf("[PLAYER_STATE_TEST] build polling continues while away from build view PASS\n");
+
+    /* Drive the public rebuild action through the same package-builder child
+       path. The synthetic child emits a current fixture on success and leaves
+       the prior incompatible package byte-identical on failure. */
+    char cache_root[NK_MAX_PATH];
+    char rebuild_root[NATIVE_TEST_PATH_MAX + 64];
+    char user_root[NATIVE_TEST_PATH_MAX + 96];
+    char install_root[NATIVE_TEST_PATH_MAX + 96];
+    char install_tools[NATIVE_TEST_PATH_MAX + 128];
+    char cli_path[NATIVE_TEST_PATH_MAX + 160];
+    char prereq_bin[NATIVE_TEST_PATH_MAX + 160];
+    char tool_path[NATIVE_TEST_PATH_MAX + 192];
+    char package_path[NATIVE_TEST_PATH_MAX + 192];
+    char incompatible_reason[2048];
+    char package_hash_before[65];
+    char package_hash_after[65];
+    assert(nk_platform_get_path(NK_PATH_CACHE, cache_root, sizeof(cache_root)));
+    snprintf(rebuild_root, sizeof(rebuild_root), "%s%crebuild-package-state",
+             cache_root, sep);
+    snprintf(user_root, sizeof(user_root), "%s%cuser", rebuild_root, sep);
+    snprintf(install_root, sizeof(install_root), "%s%cinstall", rebuild_root, sep);
+    snprintf(install_tools, sizeof(install_tools), "%s%ctools", install_root, sep);
+    snprintf(cli_path, sizeof(cli_path), "%s%cnk_cli.py", install_tools, sep);
+    snprintf(prereq_bin, sizeof(prereq_bin),
+             "%s%cprerequisites%cmsys64%cucrt64%cbin", user_root,
+             sep, sep, sep, sep);
+    assert(nk_platform_mkdir_p(user_root));
+    assert(nk_platform_mkdir_p(install_tools));
+    assert(nk_platform_mkdir_p(prereq_bin));
+    write_text_file(cli_path, "# native state test child entry point\n");
+#if defined(_WIN32) || defined(_WIN64)
+    snprintf(tool_path, sizeof(tool_path), "%s%cgcc.exe", prereq_bin, sep);
+    write_text_file(tool_path, "fixture\n");
+    snprintf(tool_path, sizeof(tool_path), "%s%cmingw32-make.exe", prereq_bin, sep);
+#else
+    snprintf(tool_path, sizeof(tool_path), "%s%cgcc", prereq_bin, sep);
+    write_text_file(tool_path, "fixture\n");
+    snprintf(tool_path, sizeof(tool_path), "%s%c%s", prereq_bin, sep,
+             "mingw32-make");
+#endif
+    write_text_file(tool_path, "fixture\n");
+
+    PlayerApp *rebuild_app = (PlayerApp *)calloc(1, sizeof(PlayerApp));
+    assert(rebuild_app != NULL);
+    assert(strlen(user_root) < sizeof(rebuild_app->runtime_root));
+    memcpy(rebuild_app->runtime_root, user_root, strlen(user_root) + 1);
+    assert(strlen(install_root) < sizeof(rebuild_app->install_root));
+    memcpy(rebuild_app->install_root, install_root, strlen(install_root) + 1);
+    rebuild_app->game_count = 1;
+    snprintf(rebuild_app->games[0].disc_id,
+             sizeof(rebuild_app->games[0].disc_id), "ULUS99998");
+    snprintf(rebuild_app->games[0].title_id,
+             sizeof(rebuild_app->games[0].title_id), "experimental-ulus99998");
+    snprintf(rebuild_app->games[0].title_name,
+             sizeof(rebuild_app->games[0].title_name), "Rebuild fixture");
+    snprintf(rebuild_app->games[0].selected_executable,
+             sizeof(rebuild_app->games[0].selected_executable),
+             "EBOOT.BIN");
+    rebuild_app->games[0].is_experimental = true;
+
+    bool had_python = false;
+    bool had_build_mode = false;
+    bool had_title_id = false;
+    bool had_install_override = false;
+    char *saved_python = capture_environment_value("PYTHON", &had_python);
+    char *saved_build_mode = capture_environment_value(
+        "NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", &had_build_mode);
+    char *saved_title_id = capture_environment_value(
+        "NAKAGAWA_TEST_PACKAGE_REBUILD_TITLE_ID", &had_title_id);
+    char *saved_install_override = capture_environment_value(
+        "NK_INSTALL_ROOT", &had_install_override);
+    nk_ps_set_env("PYTHON", self_executable);
+    nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_TITLE_ID",
+                  rebuild_app->games[0].title_id);
+    nk_ps_set_env("NK_INSTALL_ROOT", NULL);
+
+    uint32_t incompatible_abi = SR_CPUSTATE_ABI_VERSION + 100u;
+    write_experimental_profile_fixture(
+        user_root, rebuild_app->games[0].disc_id,
+        rebuild_app->games[0].title_id,
+        rebuild_app->games[0].selected_executable, FIXTURE_SHA256);
+    write_runtime_package_fixture(user_root, rebuild_app->games[0].disc_id,
+                                  rebuild_app->games[0].title_id,
+                                  incompatible_abi,
+                                  "experimental-ulus99998.exe",
+                                  FIXTURE_SHA256, NULL);
+    NkRuntimePackageStatus rebuild_status = player_app_validate_runtime_package(
+        rebuild_app, &rebuild_app->games[0], NULL,
+        incompatible_reason, sizeof(incompatible_reason));
+    if (rebuild_status != NK_RUNTIME_PACKAGE_INCOMPATIBLE) {
+        fprintf(stderr, "rebuild fixture status=%s reason=%s\n",
+                runtime_package_status_name(rebuild_status), incompatible_reason);
+    }
+    assert(rebuild_status == NK_RUNTIME_PACKAGE_INCOMPATIBLE);
+    nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", "success");
+    assert(player_app_rebuild_package(rebuild_app, 0));
+    assert(rebuild_app->active_view == VIEW_BUILDING_PACKAGE);
+    poll_player_package_build_to_terminal(rebuild_app);
+    assert(rebuild_app->build_session.is_complete);
+    player_app_runtime_package_cache_invalidate(rebuild_app);
+    assert(player_app_validate_runtime_package(
+               rebuild_app, &rebuild_app->games[0], NULL,
+               incompatible_reason, sizeof(incompatible_reason)) ==
+           NK_RUNTIME_PACKAGE_OK);
+
+    write_runtime_package_fixture(user_root, rebuild_app->games[0].disc_id,
+                                  rebuild_app->games[0].title_id,
+                                  incompatible_abi,
+                                  "experimental-ulus99998.exe",
+                                  FIXTURE_SHA256, NULL);
+    player_app_runtime_package_cache_invalidate(rebuild_app);
+    assert(player_app_validate_runtime_package(
+               rebuild_app, &rebuild_app->games[0], NULL,
+               incompatible_reason, sizeof(incompatible_reason)) ==
+           NK_RUNTIME_PACKAGE_INCOMPATIBLE);
+    snprintf(package_path, sizeof(package_path), "%s%cpackages%c%s%cpackage.json",
+             user_root, sep, sep, rebuild_app->games[0].disc_id, sep);
+    fixture_sha_file(package_path, package_hash_before);
+    nk_ps_set_env("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE", "failure");
+    assert(player_app_rebuild_package(rebuild_app, 0));
+    poll_player_package_build_to_terminal(rebuild_app);
+    assert(rebuild_app->build_session.is_failed);
+    fixture_sha_file(package_path, package_hash_after);
+    assert(strcmp(package_hash_before, package_hash_after) == 0);
+    player_app_runtime_package_cache_invalidate(rebuild_app);
+    assert(player_app_validate_runtime_package(
+               rebuild_app, &rebuild_app->games[0], NULL,
+               incompatible_reason, sizeof(incompatible_reason)) ==
+           NK_RUNTIME_PACKAGE_INCOMPATIBLE);
+
+    free(rebuild_app);
+    assert(test_remove_tree(rebuild_root));
+    restore_environment_value("PYTHON", saved_python, had_python);
+    restore_environment_value("NAKAGAWA_TEST_PACKAGE_REBUILD_MODE",
+                              saved_build_mode, had_build_mode);
+    restore_environment_value("NAKAGAWA_TEST_PACKAGE_REBUILD_TITLE_ID",
+                              saved_title_id, had_title_id);
+    restore_environment_value("NK_INSTALL_ROOT", saved_install_override,
+                              had_install_override);
+    free(saved_python);
+    free(saved_build_mode);
+    free(saved_title_id);
+    free(saved_install_override);
+    printf("[PLAYER_STATE_TEST] incompatible package rebuild success and failed-build preservation PASS\n");
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--image") == 0) {
         return repeat_launch_child_mode();
+    }
+    if (argc == 3 && strcmp(argv[1], "-c") == 0) {
+        static const char python_probe[] =
+            "import sys; sys.exit(sys.implementation.name != 'cpython' or "
+            "sys.version_info[:2] != (3, 14))";
+        return strcmp(argv[2], python_probe) == 0 ? 0 : 94;
+    }
+    if (argc >= 3 && strcmp(argv[2], "build-package") == 0) {
+        return player_state_package_builder_child(argc, argv);
     }
     if (argc == 7 && strcmp(argv[1], "--validate-package") == 0) {
         char *end = NULL;
@@ -1763,26 +2045,32 @@ int main(int argc, char **argv) {
      * cache, save and boot-event paths inside a temporary root, never inside
      * the developer's real per-user directories. */
     native_test_create_root("player-state");
+    char self_executable[NK_MAX_PATH];
+    if (!nk_platform_absolute_path(argv[0], self_executable,
+                                   sizeof(self_executable))) {
+        snprintf(self_executable, sizeof(self_executable), "%s", argv[0]);
+    }
     {
-        /* A developer machine may point NAKAGAWA_PSP_KEY_FILE at the real key
-         * file. Plant a decoy override that names an existing file: unless the
-         * isolation clears it, the no-key-file preflight check below consults
-         * the decoy instead of the isolated user-data root and fails. */
-        char decoy_key[NATIVE_TEST_PATH_MAX + 32];
-        int written = snprintf(decoy_key, sizeof(decoy_key), "%s%cdeveloper-keyfile.json",
+        /* Nakagawa does not decrypt games and reads no key file. Leave the old
+         * key-file override pointing at an existing file for the whole run:
+         * the encrypted-executable and encrypted-module checks below must
+         * ignore it, decrypt nothing and never name it. */
+        int written = snprintf(g_decoy_key_path, sizeof(g_decoy_key_path),
+                               "%s%cdeveloper-keyfile.json",
                                native_test_get_root(), nk_platform_path_separator());
-        assert(written > 0 && (size_t)written < sizeof(decoy_key));
-        write_text_file(decoy_key, "{\"format\":\"nakagawa-psp-keystore-1\",\"entries\":{}}");
-        native_test_set_env("NAKAGAWA_PSP_KEY_FILE", decoy_key);
+        assert(written > 0 && (size_t)written < sizeof(g_decoy_key_path));
+        write_text_file(g_decoy_key_path, "{\"format\":\"nakagawa-psp-keystore-1\",\"entries\":{}}");
+        native_test_set_env("NAKAGAWA_PSP_KEY_FILE", g_decoy_key_path);
     }
     native_test_isolate_user_data_roots();
     {
         const char *key_override = getenv("NAKAGAWA_PSP_KEY_FILE");
-        assert(key_override == NULL || key_override[0] == '\0');
+        assert(key_override != NULL && strcmp(key_override, g_decoy_key_path) == 0);
     }
     native_test_assert_cache_root_isolated();
     native_test_assert_config_root_isolated();
 
+    test_package_build_lifecycle(self_executable);
     test_bitmap_font_text_fallback();
     test_display_path_hides_profile_folder();
     test_library_card_status_text();
@@ -2729,12 +3017,38 @@ int main(int argc, char **argv) {
             decrypted_dir, nk_platform_path_separator());
         assert(elf_written > 0 && (size_t)elf_written < sizeof(decrypted_elf));
         remove(decrypted_elf);
+        /* A key file at the old default location is ignored as well. */
+        char old_key_dir[700], old_key_file[760], staging_dir[700];
+        int key_written = snprintf(old_key_dir, sizeof(old_key_dir), "%s%ckeys",
+                                   preflight_root, nk_platform_path_separator());
+        assert(key_written > 0 && (size_t)key_written < sizeof(old_key_dir));
+        assert(nk_platform_mkdir_p(old_key_dir));
+        key_written = snprintf(old_key_file, sizeof(old_key_file), "%s%cpsp-keyfile.json",
+                               old_key_dir, nk_platform_path_separator());
+        assert(key_written > 0 && (size_t)key_written < sizeof(old_key_file));
+        write_text_file(old_key_file, "{\"format\":\"nakagawa-psp-keystore-1\",\"entries\":{}}");
+        key_written = snprintf(staging_dir, sizeof(staging_dir), "%s%ccache%cdecrypted",
+                               preflight_root, nk_platform_path_separator(),
+                               nk_platform_path_separator());
+        assert(key_written > 0 && (size_t)key_written < sizeof(staging_dir));
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
         check = find_preflight_check(&wiz->wizard.preflight, "EXECUTABLE");
         assert(check && check->status == PREFLIGHT_UNSUPPORTED);
-        assert(strstr(check->message, "Encrypted executable: supply decrypted modules at ") != NULL);
+        assert(strstr(check->message, "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. "
+                                      "Nakagawa does not decrypt games. Place a decrypted "
+                                      "EBOOT.elf from your own copy in ") != NULL);
         assert(strstr(check->message, decrypted_dir) != NULL);
+        assert(strstr(check->message, "key file") == NULL && strstr(check->message, "keyfile") == NULL);
+        assert(strstr(check->message, g_decoy_key_path) == NULL);
         assert(check->issue_count == 1 && check->issue_numbers[0] == 308);
+        /* Nothing was decrypted or staged. */
+        {
+            FILE *produced = fopen(decrypted_elf, "rb");
+            assert(produced == NULL);
+        }
+        assert(!nk_platform_dir_exists(staging_dir));
+        assert(remove(old_key_file) == 0);
+        assert(test_rmdir(old_key_dir) == 0);
 
         write_synthetic_mips_elf(decrypted_elf);
         player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
@@ -2823,6 +3137,46 @@ int main(int argc, char **argv) {
                 module_check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
                 assert(module_check && module_check->status == PREFLIGHT_OK);
                 assert(strstr(module_check->message, "Guest modules: 1 of 1 ready.") != NULL);
+                write_guest_module_iso(module_iso_path, "libfont.prx", prx_bytes,
+                                       sizeof(prx_bytes));
+            }
+
+            /* An encrypted disc module with no plain copy is not ready: Nakagawa
+               does not decrypt games and ignores the key-file override, so the
+               check names the module and the folder, and writes nothing. */
+            {
+                unsigned char encrypted_prx[0x100];
+                memset(encrypted_prx, 0, sizeof(encrypted_prx));
+                memcpy(encrypted_prx, "~PSP", 4);
+                encrypted_prx[0x27] = 1;    /* one segment */
+                encrypted_prx[0x55] = 0x10; /* segment size 0x1000 */
+                write_guest_module_iso(module_iso_path, "libfont.prx", encrypted_prx,
+                                       sizeof(encrypted_prx));
+                remove(module_copy);
+                player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+                module_check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
+                assert(module_check && module_check->status == PREFLIGHT_MISSING);
+                assert(strstr(module_check->message, "Guest modules: 0 of 1 ready; "
+                                                     "ENCRYPTED_MODULE: libfont.prx is "
+                                                     "encrypted. Nakagawa does not decrypt "
+                                                     "games. Place a decrypted libfont.prx "
+                                                     "from your own copy in ") != NULL);
+                assert(strstr(module_check->message, module_dir) != NULL);
+                assert(strstr(module_check->message, "key file") == NULL &&
+                       strstr(module_check->message, "keyfile") == NULL);
+                assert(strstr(module_check->message, g_decoy_key_path) == NULL);
+                {
+                    FILE *produced = fopen(module_copy, "rb");
+                    assert(produced == NULL);
+                }
+
+                /* The user's plain copy makes the encrypted disc module ready. */
+                write_synthetic_guest_prx(module_copy, sizeof(prx_bytes));
+                player_app_build_compatibility_preflight(wiz, true, true, &executable_report);
+                module_check = find_preflight_check(&wiz->wizard.preflight, "GUEST_MODULES");
+                assert(module_check && module_check->status == PREFLIGHT_OK);
+                assert(strstr(module_check->message, "Guest modules: 1 of 1 ready.") != NULL);
+                assert(remove(module_copy) == 0);
                 write_guest_module_iso(module_iso_path, "libfont.prx", prx_bytes,
                                        sizeof(prx_bytes));
             }
@@ -3997,6 +4351,30 @@ int main(int argc, char **argv) {
         assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
         assert(s_app2->settings.present_scaling == NK_PRESENT_SCALING_SHARP);
 
+        /* network_mode is reserved: offline is the only accepted value, it is
+           written on save, and any stored value (a later "online", or junk) loads
+           as offline rather than as something more permissive. */
+        assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
+        assert(player_app_save_settings(s_app2, test_settings_path) == NK_OK);
+        {
+            FILE *nf = fopen(test_settings_path, "rb");
+            char saved[4096] = {0};
+            assert(nf != NULL);
+            size_t n = fread(saved, 1, sizeof(saved) - 1, nf);
+            fclose(nf);
+            saved[n] = '\0';
+            assert(strstr(saved, "\"network_mode\": \"offline\"") != NULL);
+        }
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 2, \"network_mode\": \"online\"}");
+        s_app2->settings.network_mode = (NkNetworkMode)7;
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
+        write_text_file(test_settings_path,
+                        "{\"schema_version\": 2, \"network_mode\": 3}");
+        assert(player_app_load_settings(s_app2, test_settings_path) == NK_OK);
+        assert(s_app2->settings.network_mode == NK_NETWORK_MODE_OFFLINE);
+
         remove(test_settings_path);
         free(s_app);
         free(s_app2);
@@ -4096,12 +4474,12 @@ int main(int argc, char **argv) {
 
         /* Set build error with stage, boundary text, and log path */
         player_app_set_build_error(bapp, "preflight",
-                                   "Encrypted executable: supply decrypted modules.",
+                                   "ENCRYPTED_EXECUTABLE: EBOOT.BIN is encrypted. Nakagawa does not decrypt games.",
                                    "C:/logs/build_TEST80001.log");
         assert(bapp->active_view == VIEW_ERROR);
         assert(strcmp(bapp->last_error.error_code, "PACKAGE_BUILD_FAILED") == 0);
         assert(strcmp(bapp->last_error.failed_stage, "preflight") == 0);
-        assert(strstr(bapp->last_error.boundary_text, "supply decrypted modules") != NULL);
+        assert(strstr(bapp->last_error.boundary_text, "ENCRYPTED_EXECUTABLE") != NULL);
         assert(strcmp(bapp->last_error.log_file_path, "C:/logs/build_TEST80001.log") == 0);
 
         /* Cancellation transitions session */
@@ -4110,6 +4488,55 @@ int main(int argc, char **argv) {
         player_app_cancel_package_build(bapp);
         assert(bapp->build_session.is_cancelled);
         assert(!bapp->build_session.is_building);
+
+        /* A duplicate BUILD must refuse before session initialization erases
+           the child handle and the identity of the build already in flight. */
+        char guard_cache[NK_MAX_PATH];
+        char guard_cwd[NK_MAX_PATH];
+        char guard_root[NK_MAX_PATH * 2];
+        char guard_probe[NK_MAX_PATH * 2];
+        assert(nk_platform_get_path(NK_PATH_CACHE, guard_cache,
+                                    sizeof(guard_cache)));
+        assert(nk_ps_getcwd(guard_cwd, sizeof(guard_cwd)) != NULL);
+        snprintf(guard_root, sizeof(guard_root), "%s%cno_install",
+                 guard_cache, nk_platform_path_separator());
+        snprintf(guard_probe, sizeof(guard_probe), "%s%ccli_not_found_probe",
+                 guard_cache, nk_platform_path_separator());
+        assert(nk_platform_mkdir_p(guard_probe));
+        bool had_install_override = false;
+        char *saved_install_override = capture_environment_value(
+            "NK_INSTALL_ROOT", &had_install_override);
+        nk_ps_set_env("NK_INSTALL_ROOT", NULL);
+        assert(nk_ps_chdir(guard_probe) == 0);
+        snprintf(bapp->install_root, sizeof(bapp->install_root), "%.*s",
+                 (int)sizeof(bapp->install_root) - 1, guard_root);
+        bapp->game_count = 1;
+        snprintf(bapp->games[0].disc_id,
+                 sizeof(bapp->games[0].disc_id), "TEST90031");
+        snprintf(bapp->games[0].title_name,
+                 sizeof(bapp->games[0].title_name), "In-flight build fixture");
+        package_builder_init_session(&bapp->build_session,
+                                     bapp->games[0].disc_id,
+                                     bapp->games[0].title_name);
+        bapp->build_session.is_building = true;
+        uint64_t in_flight_generation = bapp->build_session.session_generation;
+        assert(package_builder_start(&bapp->build_session, "python", "cli",
+                                     "data", "logs") ==
+               NK_ERROR_ALREADY_EXISTS);
+        assert(bapp->build_session.is_building);
+        assert(bapp->build_session.session_generation == in_flight_generation);
+        assert(!player_app_start_package_build(bapp, 0));
+        assert(strcmp(bapp->last_error.error_code,
+                      "PACKAGE_BUILD_IN_PROGRESS") == 0);
+        assert(strstr(bapp->last_error.message, "already running") != NULL);
+        assert(bapp->last_error.return_view == VIEW_BUILDING_PACKAGE);
+        assert(bapp->build_session.is_building);
+        assert(bapp->build_session.session_generation == in_flight_generation);
+        assert(nk_ps_chdir(guard_cwd) == 0);
+        restore_environment_value("NK_INSTALL_ROOT", saved_install_override,
+                                  had_install_override);
+        free(saved_install_override);
+        bapp->build_session.is_building = false;
 
         free(bapp);
     }

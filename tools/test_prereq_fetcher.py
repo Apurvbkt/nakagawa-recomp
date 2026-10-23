@@ -9,6 +9,7 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
 import os
+import re
 from pathlib import Path, PurePosixPath
 import socket
 import subprocess
@@ -457,17 +458,71 @@ class TestPrerequisiteFetcher(unittest.TestCase):
             {name.lower() for name in closure},
         )
 
-    def test_sony_font_hook_is_fail_closed_and_never_downloaded_by_tests(self) -> None:
+    def test_manifest_has_no_firmware_or_font_download_hook(self) -> None:
+        # The player never fetches PSP system software, firmware or system fonts:
+        # those come only from the user's own device. The prerequisite manifest
+        # therefore carries no font-source hook and names no firmware download.
         manifest_path = Path(__file__).resolve().parents[1] / "assets" / "prereq_manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        hooks = manifest["font_source_hooks"]
-        self.assertEqual(len(hooks), 1)
-        self.assertEqual(hooks[0]["type"], "sony-psp-system-software-update")
-        self.assertIsNone(hooks[0]["url"])
-        self.assertIsNone(hooks[0]["sha256"])
-        self.assertFalse(hooks[0]["download_in_tests"])
-        self.assertIn("decryption and your key file", hooks[0]["failure_message"])
-        self.assertNotRegex(hooks[0]["failure_message"], r"#[0-9]+")
+        text = manifest_path.read_text(encoding="utf-8")
+        manifest = json.loads(text)
+        self.assertNotIn("font_source_hooks", manifest)
+        self.assertNotIn("system-software-update", text.lower())
+        self.assertNotIn("firmware", text.lower())
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# Offline by default (AGENTS.md section 5): the shipped player, runtime and
+# their Python helpers reach the network only through these files, both of
+# them the consented, pinned prerequisite download. A new egress needs a
+# maintainer decision, a "Network use" entry in docs/SETUP.md, and a line here.
+NETWORK_EGRESS_ALLOWLIST = frozenset({
+    "src/player/package_builder.c",
+    "tools/nk_core/prereq_fetcher.py",
+})
+
+# Shipped code: everything under src/ and the Python the player runs. Maintainer
+# tools elsewhere in tools/ (SBOM and issue-link audits) never ship and are not
+# covered.
+NETWORK_EGRESS_SCOPES = (("src", (".c", ".h", ".cpp", ".hpp")), ("tools/nk_core", (".py",)))
+
+NETWORK_EGRESS_PATTERN = re.compile(
+    r"\bWinHttp\w*|\bwinhttp\.h\b|\bInternet(?:Open|Connect|ReadFile)\w*|\bwininet\b"
+    r"|\bURLDownloadToFile\w*|\bWSAStartup\b|\bwinsock2?\.h\b|<sys/socket\.h>"
+    r"|\bgetaddrinfo\b|\bSDL_net\b|\bcurl_easy_\w+|\bsocket\s*\("
+    r"|\burllib\.request\b|\bfrom\s+urllib\s+import\s+request\b|\burlopen\b"
+    r"|\bhttp\.client\b|^\s*(?:import|from)\s+(?:requests|socket|httpx|aiohttp)\b",
+    re.MULTILINE,
+)
+
+
+class TestNetworkEgressAllowlist(unittest.TestCase):
+    def test_only_the_prerequisite_downloaders_use_network_apis(self) -> None:
+        offenders = []
+        for scope, suffixes in NETWORK_EGRESS_SCOPES:
+            for path in sorted((REPO_ROOT / scope).rglob("*")):
+                if not path.is_file() or path.suffix not in suffixes:
+                    continue
+                rel = path.relative_to(REPO_ROOT).as_posix()
+                if rel in NETWORK_EGRESS_ALLOWLIST:
+                    continue
+                match = NETWORK_EGRESS_PATTERN.search(path.read_text(encoding="utf-8", errors="replace"))
+                if match:
+                    offenders.append(f"{rel}: {match.group(0).strip()}")
+        self.assertEqual(offenders, [], "network API outside the egress allowlist; see AGENTS.md section 5")
+
+    def test_allowlisted_downloaders_still_exist(self) -> None:
+        for rel in sorted(NETWORK_EGRESS_ALLOWLIST):
+            self.assertTrue((REPO_ROOT / rel).is_file(), f"stale allowlist entry: {rel}")
+
+    def test_pattern_catches_each_api_family(self) -> None:
+        for sample in ("WinHttpOpen(", "#include <winsock2.h>", "#include <sys/socket.h>",
+                       "getaddrinfo(", "socket (AF_INET", "import urllib.request",
+                       "from urllib import request", "import requests", "import socket",
+                       "http.client.HTTPSConnection", "InternetOpenW("):
+            self.assertIsNotNone(NETWORK_EGRESS_PATTERN.search(sample), sample)
+        for sample in ("from urllib.parse import quote", "sceNetAdhocInit", "s_socket_count"):
+            self.assertIsNone(NETWORK_EGRESS_PATTERN.search(sample), sample)
 
 
 if __name__ == "__main__":
